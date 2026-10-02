@@ -17,7 +17,7 @@ body{background:var(--bg);color:var(--tx);font:16px system-ui,sans-serif;display
 nav{display:flex;background:var(--card);border-top:1px solid var(--ln);padding-bottom:env(safe-area-inset-bottom,0px)}
 nav button{flex:1;border:0;background:none;color:var(--mu);padding:12px 4px;font-size:14px}
 nav button.on{color:var(--ac);font-weight:700;box-shadow:inset 0 3px 0 var(--ac)}
-input{width:100%;font:inherit;padding:11px;border:1px solid var(--ln);border-radius:8px;background:var(--card);color:var(--tx)}
+input,select{width:100%;font:inherit;padding:11px;border:1px solid var(--ln);border-radius:8px;background:var(--card);color:var(--tx)}
 label{display:block;font-size:13px;color:var(--mu);margin:10px 0 3px}
 button{font:inherit}
 .row{display:flex;gap:8px;margin-bottom:10px}
@@ -67,17 +67,41 @@ const stat=i=>i.q<=0?'<span class=out>Out of stock</span>':i.q<=i.l?`<span class
 const views={
 sell:()=>`<div class=row><input id=q placeholder="Scan or type barcode / name" oninput="sug()" onkeydown="if(event.key=='Enter')addQ()" autocomplete=off><button class=ic onclick="scan(addCode)">📷</button></div><div id=sug></div><div id=cart></div>`,
 stock:()=>`<div class=row><input id=f placeholder="Search stock" value="${esc(filter)}" oninput="filter=this.value;drawStock()"><button class=ic onclick="scan(stockScan)">📷</button></div><button class=big onclick="edit(-1)">+ Add item</button><div id=list></div>`,
-sales:()=>{const td=new Date().toDateString(),ts=db.sales.filter(s=>new Date(s.d).toDateString()==td);
- return `<div class=tot><span>Today</span><span>${m(ts.reduce((a,s)=>a+s.t,0))}</span></div><div class=mu style="margin:0 2px 8px">${ts.length} sale(s) today, ${db.sales.length} in total</div>`+
- (db.sales.length?db.sales.slice().reverse().slice(0,100).map(s=>`<div class=card><div class=g><b>#${s.id}</b> <small style="display:inline">${new Date(s.d).toLocaleString()}</small><small>${s.L.map(l=>esc(l.n)+' ×'+l.q).join(', ')}</small></div><b>${m(s.t)}</b></div>`).join(''):'<p class=mu>No sales yet.</p>')},
-data:()=>`<h2>Excel</h2><p class=mu>Export makes one .xlsx file with a Stock sheet and a Sales sheet. You can email, print or store it.</p>
-<button class=big onclick="exp(1)">Email / share Excel file</button><button class="big alt" onclick="exp(0)">Download Excel file</button>
-<h2>Import stock</h2><p class=mu>Load a .xlsx with a Stock sheet (columns: Barcode, Name, Price, Quantity, Low-stock level). Matching items are updated, new ones are added.</p>
+sales:()=>{const ls=db.sales.filter(s=>inRange(s.d));
+ return `<select id=rg onchange="rng=this.value;render()" style="margin-bottom:10px">${[['today','Today'],['week','This week'],['month','This month'],['all','All time']].map(([v,t])=>`<option value=${v}${rng==v?' selected':''}>${t}</option>`).join('')}</select>
+ <div class=tot><span>Total</span><span>${m(ls.reduce((a,s)=>a+s.t,0))}</span></div><div class=mu style="margin:0 2px 8px">${ls.length} sale(s) in this period</div>
+ <button class=big onclick="exp(1)">Email / share Excel file</button><button class="big alt" onclick="exp(0)">Download Excel file</button><p class=mu>The file has a Sales sheet for the period chosen above, and a Stock sheet.</p>`+
+ (ls.length?ls.slice().reverse().slice(0,100).map(s=>`<div class=card><div class=g><b>#${s.id}</b> <small style="display:inline">${new Date(s.d).toLocaleString()}</small><small>${s.L.map(l=>esc(l.n)+' ×'+l.q).join(', ')}</small></div><b>${m(s.t)}</b></div>`).join(''):'<p class=mu>No sales in this period.</p>')},
+data:()=>`<h2>Import stock</h2><p class=mu>Load a .xlsx with a Stock sheet (columns: Barcode, Name, Price, Quantity, Low-stock level). Matching items are updated, new ones are added.</p>
 <input type=file id=imp accept=".xlsx" onchange="imp(this.files[0])">
-<h2>Housekeeping</h2><button class="big del" onclick="if(confirm('Delete ALL sales history? Export first!')){db.sales=[];save();toast('Sales cleared');render()}">Clear sales history</button>
-<p class=mu>Your data is stored on this phone. Export regularly as a backup.</p>`};
-function go(t){tab=t;render()}
-function render(){document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.t==tab));$('#main').innerHTML=views[tab]();if(tab=='sell')drawCart();if(tab=='stock')drawStock()}
+<h2>Admin</h2><button class="big alt" onclick="newPin('data')">Change admin PIN</button><h2>Housekeeping</h2><button class="big del" onclick="if(confirm('Delete ALL sales history? Export first!')){db.sales=[];save();toast('Sales cleared');render()}">Clear sales history</button>
+<p class=mu>For a full backup, go to Sales, choose All time and tap Email / share. Your data is stored on this phone, so back it up regularly.</p>`};
+const NAMES={sell:'Sell',stock:'Stock',sales:'Sales',data:'Admin'};
+function go(t){if(t!='sell'&&t!='sales'&&!admin){askPin(t);return}tab=t;render()}
+function render(){document.querySelectorAll('nav button').forEach(b=>{b.classList.toggle('on',b.dataset.t==tab);b.textContent=((b.dataset.t=='stock'||b.dataset.t=='data')&&!admin?'🔒 ':'')+NAMES[b.dataset.t]});
+ $('#main').innerHTML=(admin&&tab!='sell'?'<button class="big alt" onclick="lock()">🔓 Log out of admin</button>':'')+views[tab]();if(tab=='sell')drawCart();if(tab=='stock')drawStock()}
+
+/* ---------- admin PIN ---------- */
+let rng='today';
+function inRange(iso){const d=new Date(iso),n=new Date();if(rng=='all')return true;if(rng=='today')return d.toDateString()==n.toDateString();if(rng=='month')return d.getMonth()==n.getMonth()&&d.getFullYear()==n.getFullYear();return d>=new Date(n.getFullYear(),n.getMonth(),n.getDate()-((n.getDay()+6)%7))}
+let admin=false,fails=0,until=0,last=Date.now();
+const getPin=()=>{try{return localStorage.getItem('pos_pin')}catch(e){return null}};
+const hash=async s=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode('pos:'+s)))].map(b=>b.toString(16).padStart(2,'0')).join('');
+function askPin(t){if(!getPin()){newPin(t);return}
+ const M=$('#modal');M.hidden=false;
+ M.innerHTML=`<h2>Admin login</h2><label>Enter PIN</label><input id=pin type=password inputmode=numeric autocomplete=off onkeydown="if(event.key=='Enter')login('${t}')"><button class=big onclick="login('${t}')">Log in</button><button class="big alt" onclick="$('#modal').hidden=true">Cancel</button>`;$('#pin').focus()}
+async function login(t){if(Date.now()<until){toast('Too many tries. Wait '+Math.ceil((until-Date.now())/1000)+'s');return}
+ if(await hash($('#pin').value)==getPin()){admin=true;fails=0;$('#modal').hidden=true;tab=t;render()}
+ else{if(++fails>=5){until=Date.now()+30000;fails=0}toast('Wrong PIN');$('#pin').value=''}}
+function newPin(t){const M=$('#modal');M.hidden=false;
+ M.innerHTML=`<h2>${getPin()?'Change admin PIN':'Set admin PIN'}</h2><p class=mu>Choose 4 to 8 digits that only you know. It is needed to change stock and prices, see sales and use Excel. Write it down: it cannot be recovered.</p><label>New PIN</label><input id=pin type=password inputmode=numeric autocomplete=off><label>Confirm PIN</label><input id=pin2 type=password inputmode=numeric autocomplete=off><button class=big onclick="setPin('${t}')">Save PIN</button><button class="big alt" onclick="$('#modal').hidden=true">Cancel</button>`}
+async function setPin(t){const a=$('#pin').value;if(!/^\d{4,8}$/.test(a)){toast('PIN must be 4 to 8 digits');return}if(a!=$('#pin2').value){toast('PINs do not match');return}
+ try{localStorage.setItem('pos_pin',await hash(a))}catch(e){toast('Could not save PIN');return}
+ admin=true;$('#modal').hidden=true;tab=t;render();toast('PIN saved')}
+function lock(){admin=false;tab='sell';$('#modal').hidden=true;render()}
+['touchstart','click'].forEach(ev=>document.addEventListener(ev,()=>last=Date.now(),true));
+setInterval(()=>{if(admin&&Date.now()-last>300000){lock();toast('Admin locked after 5 minutes idle')}},15000);
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&admin)lock()});
 
 /* ---------- selling ---------- */
 const find=c=>db.items.find(i=>i.b&&i.b==String(c).trim());
@@ -141,7 +165,7 @@ const sheet=rows=>'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><works
  rows.map((r,y)=>`<row r="${y+1}">`+r.map((v,x)=>{const ref=col(x)+(y+1);return typeof v=='number'?`<c r="${ref}"><v>${v}</v></c>`:`<c r="${ref}" t="inlineStr"><is><t>${esc(v)}</t></is></c>`}).join('')+'</row>').join('')+'</sheetData></worksheet>';
 function buildXlsx(){
  const stock=[['Barcode','Name','Price','Quantity','Low-stock level'],...db.items.map(i=>[i.b||'',i.n,i.p,i.q,i.l])];
- const sales=[['Receipt','Date','Time','Barcode','Item','Qty','Price','Line total'],...db.sales.flatMap(s=>{const d=new Date(s.d);return s.L.map(l=>[s.id,d.toLocaleDateString(),d.toLocaleTimeString(),l.b||'',l.n,l.q,l.p,+(l.p*l.q).toFixed(2)])})];
+ const sales=[['Receipt','Date','Time','Barcode','Item','Qty','Price','Line total'],...db.sales.filter(s=>inRange(s.d)).flatMap(s=>{const d=new Date(s.d);return s.L.map(l=>[s.id,d.toLocaleDateString(),d.toLocaleTimeString(),l.b||'',l.n,l.q,l.p,+(l.p*l.q).toFixed(2)])})];
  const N='http://schemas.openxmlformats.org/',R=N+'officeDocument/2006/relationships';
  return zip([
  ['[Content_Types].xml',`<?xml version="1.0" encoding="UTF-8"?><Types xmlns="${N}package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`],
@@ -149,7 +173,7 @@ function buildXlsx(){
  ['xl/workbook.xml',`<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="${N}spreadsheetml/2006/main" xmlns:r="${R}"><sheets><sheet name="Stock" sheetId="1" r:id="rId1"/><sheet name="Sales" sheetId="2" r:id="rId2"/></sheets></workbook>`],
  ['xl/_rels/workbook.xml.rels',`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="${N}package/2006/relationships"><Relationship Id="rId1" Type="${R}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${R}/worksheet" Target="worksheets/sheet2.xml"/></Relationships>`],
  ['xl/worksheets/sheet1.xml',sheet(stock)],['xl/worksheets/sheet2.xml',sheet(sales)]])}
-async function exp(share){const d=new Date(),fn=`pos-${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}.xlsx`;
+async function exp(share){const d=new Date(),fn=`pos-${rng}-${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}.xlsx`;
  const b=buildXlsx(),f=new File([b],fn,{type:b.type});
  if(share&&navigator.canShare&&navigator.canShare({files:[f]})){try{await navigator.share({files:[f],title:fn})}catch(e){}return}
  const a=document.createElement('a');a.href=URL.createObjectURL(f);a.download=fn;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),5000);toast(share?'Sharing not available, downloaded instead':'Downloaded '+fn)}
