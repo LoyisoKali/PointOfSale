@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f766e">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<title>Simple POS</title>
+<style>
+:root{--bg:#f4f6f5;--card:#fff;--tx:#14201d;--mu:#667470;--ac:#0f766e;--ln:#dde3e1;--bad:#b42318;--warn:#b54708}
+@media(prefers-color-scheme:dark){:root{--bg:#101615;--card:#1a2321;--tx:#e8efed;--mu:#97a5a1;--ac:#2dd4bf;--ln:#2a3532;--bad:#f97066;--warn:#fdb022}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--tx);font:16px system-ui,sans-serif;display:flex;flex-direction:column;padding-top:env(safe-area-inset-top,0px)}
+#main{flex:1;overflow:auto;padding:12px;padding-bottom:20px}
+nav{display:flex;background:var(--card);border-top:1px solid var(--ln);padding-bottom:env(safe-area-inset-bottom,0px)}
+nav button{flex:1;border:0;background:none;color:var(--mu);padding:12px 4px;font-size:14px}
+nav button.on{color:var(--ac);font-weight:700;box-shadow:inset 0 3px 0 var(--ac)}
+input{width:100%;font:inherit;padding:11px;border:1px solid var(--ln);border-radius:8px;background:var(--card);color:var(--tx)}
+label{display:block;font-size:13px;color:var(--mu);margin:10px 0 3px}
+button{font:inherit}
+.row{display:flex;gap:8px;margin-bottom:10px}
+.ic{flex:0 0 52px;border:1px solid var(--ln);background:var(--card);border-radius:8px;font-size:22px}
+.big{width:100%;padding:13px;border:0;border-radius:8px;background:var(--ac);color:#fff;font-weight:700;margin:6px 0}
+@media(prefers-color-scheme:dark){.big{color:#06201c}}
+.big.alt{background:var(--card);color:var(--tx);border:1px solid var(--ln)}
+.big.del{background:none;color:var(--bad);border:1px solid var(--bad)}
+.card{background:var(--card);border:1px solid var(--ln);border-radius:10px;padding:11px;margin-bottom:8px;display:flex;align-items:center;gap:10px;text-align:left;width:100%;color:var(--tx)}
+.card .g{flex:1;min-width:0}.card small{color:var(--mu);display:block}
+.low{color:var(--warn);font-weight:700}.out{color:var(--bad);font-weight:700}
+.q{display:flex;align-items:center;gap:8px}.q button{width:34px;height:34px;border-radius:50%;border:1px solid var(--ln);background:var(--bg);color:var(--tx);font-size:18px}
+.tot{display:flex;justify-content:space-between;font-size:22px;font-weight:700;margin:12px 2px}
+h2{font-size:17px;margin:14px 2px 8px}.mu{color:var(--mu);font-size:14px}
+#modal,#cam{position:fixed;inset:0;z-index:5;padding:env(safe-area-inset-top,0px) 0 env(safe-area-inset-bottom,0px)}
+#modal{background:var(--bg);overflow:auto;padding:14px}
+#cam{background:#000;display:flex;flex-direction:column;z-index:9}
+#cam video{flex:1;min-height:0;width:100%;object-fit:cover}
+#cam p{color:#fff;text-align:center;margin:10px}#cam button{margin:0 14px 14px;padding:14px;border-radius:8px;border:0;font-weight:700}
+[hidden]{display:none!important}
+#toast{position:fixed;left:12px;right:12px;bottom:80px;background:#222;color:#fff;padding:12px;border-radius:8px;text-align:center;z-index:20}
+</style>
+</head>
+<body>
+<div id="main"></div>
+<nav>
+<button data-t="sell" onclick="go('sell')">Sell</button>
+<button data-t="stock" onclick="go('stock')">Stock</button>
+<button data-t="sales" onclick="go('sales')">Sales</button>
+<button data-t="data" onclick="go('data')">Excel</button>
+</nav>
+<div id="modal" hidden></div>
+<div id="cam" hidden><video id="vid" playsinline muted></video><p>Point the camera at a barcode</p><button onclick="stopScan()">Cancel</button></div>
+<div id="toast" hidden></div>
+<script>
+const $=s=>document.querySelector(s);
+let db={items:[],sales:[]},cart=[],tab='sell',filter='';
+try{const d=JSON.parse(localStorage.getItem('pos')||'null');if(d)db=d}catch(e){}
+const save=()=>{try{localStorage.setItem('pos',JSON.stringify(db))}catch(e){toast('Could not save data!')}};
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const m=n=>(+n||0).toFixed(2);
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+function toast(t){const e=$('#toast');e.textContent=t;e.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(()=>e.hidden=true,2400)}
+const stat=i=>i.q<=0?'<span class=out>Out of stock</span>':i.q<=i.l?`<span class=low>Low: ${i.q} left</span>`:`${i.q} in stock`;
+
+/* ---------- views ---------- */
+const views={
+sell:()=>`<div class=row><input id=q placeholder="Scan or type barcode / name" oninput="sug()" onkeydown="if(event.key=='Enter')addQ()" autocomplete=off><button class=ic onclick="scan(addCode)">📷</button></div><div id=sug></div><div id=cart></div>`,
+stock:()=>`<div class=row><input id=f placeholder="Search stock" value="${esc(filter)}" oninput="filter=this.value;drawStock()"><button class=ic onclick="scan(stockScan)">📷</button></div><button class=big onclick="edit(-1)">+ Add item</button><div id=list></div>`,
+sales:()=>{const td=new Date().toDateString(),ts=db.sales.filter(s=>new Date(s.d).toDateString()==td);
+ return `<div class=tot><span>Today</span><span>${m(ts.reduce((a,s)=>a+s.t,0))}</span></div><div class=mu style="margin:0 2px 8px">${ts.length} sale(s) today, ${db.sales.length} in total</div>`+
+ (db.sales.length?db.sales.slice().reverse().slice(0,100).map(s=>`<div class=card><div class=g><b>#${s.id}</b> <small style="display:inline">${new Date(s.d).toLocaleString()}</small><small>${s.L.map(l=>esc(l.n)+' ×'+l.q).join(', ')}</small></div><b>${m(s.t)}</b></div>`).join(''):'<p class=mu>No sales yet.</p>')},
+data:()=>`<h2>Excel</h2><p class=mu>Export makes one .xlsx file with a Stock sheet and a Sales sheet. You can email, print or store it.</p>
+<button class=big onclick="exp(1)">Email / share Excel file</button><button class="big alt" onclick="exp(0)">Download Excel file</button>
+<h2>Import stock</h2><p class=mu>Load a .xlsx with a Stock sheet (columns: Barcode, Name, Price, Quantity, Low-stock level). Matching items are updated, new ones are added.</p>
+<input type=file id=imp accept=".xlsx" onchange="imp(this.files[0])">
+<h2>Housekeeping</h2><button class="big del" onclick="if(confirm('Delete ALL sales history? Export first!')){db.sales=[];save();toast('Sales cleared');render()}">Clear sales history</button>
+<p class=mu>Your data is stored on this phone. Export regularly as a backup.</p>`};
+function go(t){tab=t;render()}
+function render(){document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.t==tab));$('#main').innerHTML=views[tab]();if(tab=='sell')drawCart();if(tab=='stock')drawStock()}
+
+/* ---------- selling ---------- */
+const find=c=>db.items.find(i=>i.b&&i.b==String(c).trim());
+function addCode(v){const it=find(v);if(!it){toast('Not in stock list: '+v);return}addCart(it)}
+function addQ(){const v=$('#q').value.trim();if(!v)return;const it=find(v)||matches(v)[0];it?addCart(it):toast('Nothing found')}
+function matches(v){v=v.toLowerCase();return db.items.filter(i=>i.n.toLowerCase().includes(v)||(i.b||'').toLowerCase().includes(v)).slice(0,6)}
+function sug(){const v=$('#q').value.trim();$('#sug').innerHTML=v?matches(v).map(i=>`<button class=card onclick="addCart(db.items[${db.items.indexOf(i)}])"><div class=g>${esc(i.n)}<small>${stat(i)}</small></div><b>${m(i.p)}</b></button>`).join(''):''}
+function addCart(it){const c=cart.find(x=>x.id==it.id);if((c?c.q:0)+1>it.q){toast('Only '+it.q+' in stock');return}
+ c?c.q++:cart.push({id:it.id,b:it.b,n:it.n,p:it.p,q:1});if($('#q')){$('#q').value='';$('#sug').innerHTML='';$('#q').focus()}drawCart()}
+function chg(k,d){const c=cart[k],it=db.items.find(i=>i.id==c.id);if(d>0&&it&&c.q+1>it.q){toast('Only '+it.q+' in stock');return}c.q+=d;if(c.q<=0)cart.splice(k,1);drawCart()}
+const total=()=>cart.reduce((a,c)=>a+c.p*c.q,0);
+function drawCart(){const e=$('#cart');if(!e)return;
+ e.innerHTML=cart.length?cart.map((c,k)=>`<div class=card><div class=g>${esc(c.n)}<small>${m(c.p)} each</small></div><div class=q><button onclick="chg(${k},-1)">−</button><b>${c.q}</b><button onclick="chg(${k},1)">+</button></div><b style="min-width:62px;text-align:right">${m(c.p*c.q)}</b></div>`).join('')+
+ `<div class=tot><span>Total</span><span>${m(total())}</span></div><button class=big onclick="done()">Complete sale</button><button class="big alt" onclick="cart=[];drawCart()">Clear</button>`:'<p class=mu>Scan or search to add items to the sale.</p>'}
+function done(){if(!cart.length)return;const id=(db.sales.reduce((a,s)=>Math.max(a,s.id),0))+1;
+ cart.forEach(c=>{const it=db.items.find(i=>i.id==c.id);if(it)it.q-=c.q});
+ db.sales.push({id,d:new Date().toISOString(),L:cart.map(c=>({b:c.b,n:c.n,q:c.q,p:c.p})),t:total()});save();toast('Sale #'+id+' saved: '+m(total()));cart=[];drawCart()}
+
+/* ---------- stock ---------- */
+function drawStock(){const e=$('#list');if(!e)return;const f=filter.toLowerCase();
+ const l=db.items.filter(i=>!f||i.n.toLowerCase().includes(f)||(i.b||'').toLowerCase().includes(f));
+ e.innerHTML=l.length?l.map(i=>`<button class=card onclick="edit(${db.items.indexOf(i)})"><div class=g>${esc(i.n)}<small>${esc(i.b||'no barcode')} · ${stat(i)}</small></div><b>${m(i.p)}</b></button>`).join(''):'<p class=mu>No items. Tap “+ Add item”.</p>'}
+function stockScan(v){const i=db.items.findIndex(x=>x.b==v);edit(i,v)}
+function edit(i,code){const it=i>=0?db.items[i]:{b:code||'',n:'',p:'',q:'',l:5};
+ const M=$('#modal');M.hidden=false;
+ M.innerHTML=`<h2>${i>=0?'Edit item':'New item'}</h2><label>Barcode</label><div class=row><input id=eb value="${esc(it.b)}" inputmode=text><button class=ic onclick="scan(v=>$('#eb').value=v)">📷</button></div>
+ <label>Name</label><input id=en value="${esc(it.n)}"><label>Price</label><input id=ep type=number step=0.01 inputmode=decimal value="${it.p}">
+ <label>Quantity in stock</label><input id=eq type=number inputmode=numeric value="${it.q}"><label>Warn when stock is at or below</label><input id=el type=number inputmode=numeric value="${it.l}">
+ <button class=big onclick="saveItem(${i})">Save</button><button class="big alt" onclick="$('#modal').hidden=true">Cancel</button>${i>=0?`<button class="big del" onclick="delItem(${i})">Delete item</button>`:''}`}
+function saveItem(i){const b=$('#eb').value.trim(),n=$('#en').value.trim();if(!n){toast('Enter a name');return}
+ if(b&&db.items.some((x,k)=>k!=i&&x.b==b)){toast('That barcode already exists');return}
+ const o={id:i>=0?db.items[i].id:uid(),b,n,p:+$('#ep').value||0,q:+$('#eq').value||0,l:+$('#el').value||0};
+ i>=0?db.items[i]=o:db.items.push(o);db.items.sort((a,b)=>a.n.localeCompare(b.n));save();$('#modal').hidden=true;render();toast('Saved')}
+function delItem(i){if(confirm('Delete '+db.items[i].n+'?')){db.items.splice(i,1);save();$('#modal').hidden=true;render()}}
+
+/* ---------- camera scanning ---------- */
+let stream,timer;
+async function scan(cb){
+ if(!('BarcodeDetector' in window)){toast('Camera scanning is not supported in this browser. Type the code instead.');return}
+ $('#cam').hidden=false;
+ try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}})}catch(e){stopScan();toast('Camera blocked. Allow camera access in browser settings.');return}
+ const v=$('#vid');v.srcObject=stream;await v.play();const det=new BarcodeDetector();
+ timer=setInterval(async()=>{try{const r=await det.detect(v);if(r.length&&stream){const c=r[0].rawValue;stopScan();navigator.vibrate&&navigator.vibrate(60);cb(c)}}catch(e){}},300)}
+function stopScan(){clearInterval(timer);stream&&stream.getTracks().forEach(t=>t.stop());stream=null;$('#cam').hidden=true}
+
+/* ---------- minimal .xlsx writer / reader (no libraries) ---------- */
+const enc=new TextEncoder();
+const CT=(()=>{const t=[];for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0}return t})();
+const crc=d=>{let c=-1;for(let i=0;i<d.length;i++)c=CT[(c^d[i])&255]^(c>>>8);return(c^-1)>>>0};
+function zip(files){const parts=[],cd=[];let off=0;
+ for(const [name,str] of files){const nm=enc.encode(name),d=enc.encode(str),c=crc(d);
+  const h=new DataView(new ArrayBuffer(30));h.setUint32(0,0x04034b50,true);h.setUint16(4,20,true);h.setUint16(6,0x800,true);h.setUint16(12,0x21,true);h.setUint32(14,c,true);h.setUint32(18,d.length,true);h.setUint32(22,d.length,true);h.setUint16(26,nm.length,true);
+  parts.push(new Uint8Array(h.buffer),nm,d);
+  const e=new DataView(new ArrayBuffer(46));e.setUint32(0,0x02014b50,true);e.setUint16(4,20,true);e.setUint16(6,20,true);e.setUint16(8,0x800,true);e.setUint16(14,0x21,true);e.setUint32(16,c,true);e.setUint32(20,d.length,true);e.setUint32(24,d.length,true);e.setUint16(28,nm.length,true);e.setUint32(42,off,true);
+  cd.push(new Uint8Array(e.buffer),nm);off+=30+nm.length+d.length}
+ const cs=cd.reduce((a,b)=>a+b.length,0),z=new DataView(new ArrayBuffer(22));
+ z.setUint32(0,0x06054b50,true);z.setUint16(8,files.length,true);z.setUint16(10,files.length,true);z.setUint32(12,cs,true);z.setUint32(16,off,true);
+ return new Blob([...parts,...cd,new Uint8Array(z.buffer)],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'})}
+const col=i=>{let s='';for(i++;i;i=Math.floor((i-1)/26))s=String.fromCharCode(65+(i-1)%26)+s;return s};
+const sheet=rows=>'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols><col min="1" max="8" width="20" customWidth="1"/></cols><sheetData>'+
+ rows.map((r,y)=>`<row r="${y+1}">`+r.map((v,x)=>{const ref=col(x)+(y+1);return typeof v=='number'?`<c r="${ref}"><v>${v}</v></c>`:`<c r="${ref}" t="inlineStr"><is><t>${esc(v)}</t></is></c>`}).join('')+'</row>').join('')+'</sheetData></worksheet>';
+function buildXlsx(){
+ const stock=[['Barcode','Name','Price','Quantity','Low-stock level'],...db.items.map(i=>[i.b||'',i.n,i.p,i.q,i.l])];
+ const sales=[['Receipt','Date','Time','Barcode','Item','Qty','Price','Line total'],...db.sales.flatMap(s=>{const d=new Date(s.d);return s.L.map(l=>[s.id,d.toLocaleDateString(),d.toLocaleTimeString(),l.b||'',l.n,l.q,l.p,+(l.p*l.q).toFixed(2)])})];
+ const N='http://schemas.openxmlformats.org/',R=N+'officeDocument/2006/relationships';
+ return zip([
+ ['[Content_Types].xml',`<?xml version="1.0" encoding="UTF-8"?><Types xmlns="${N}package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`],
+ ['_rels/.rels',`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="${N}package/2006/relationships"><Relationship Id="rId1" Type="${R}/officeDocument" Target="xl/workbook.xml"/></Relationships>`],
+ ['xl/workbook.xml',`<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="${N}spreadsheetml/2006/main" xmlns:r="${R}"><sheets><sheet name="Stock" sheetId="1" r:id="rId1"/><sheet name="Sales" sheetId="2" r:id="rId2"/></sheets></workbook>`],
+ ['xl/_rels/workbook.xml.rels',`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="${N}package/2006/relationships"><Relationship Id="rId1" Type="${R}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${R}/worksheet" Target="worksheets/sheet2.xml"/></Relationships>`],
+ ['xl/worksheets/sheet1.xml',sheet(stock)],['xl/worksheets/sheet2.xml',sheet(sales)]])}
+async function exp(share){const d=new Date(),fn=`pos-${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}.xlsx`;
+ const b=buildXlsx(),f=new File([b],fn,{type:b.type});
+ if(share&&navigator.canShare&&navigator.canShare({files:[f]})){try{await navigator.share({files:[f],title:fn})}catch(e){}return}
+ const a=document.createElement('a');a.href=URL.createObjectURL(f);a.download=fn;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),5000);toast(share?'Sharing not available, downloaded instead':'Downloaded '+fn)}
+async function unzip(buf){const d=new DataView(buf),u=new Uint8Array(buf),td=new TextDecoder();let e=buf.byteLength-22;
+ while(e>=0&&d.getUint32(e,true)!=0x06054b50)e--;if(e<0)throw 0;
+ const n=d.getUint16(e+10,true);let p=d.getUint32(e+16,true);const out={};
+ for(let i=0;i<n;i++){const meth=d.getUint16(p+10,true),cs=d.getUint32(p+20,true),nl=d.getUint16(p+28,true),el=d.getUint16(p+30,true),cl=d.getUint16(p+32,true),lo=d.getUint32(p+42,true);
+  const name=td.decode(u.subarray(p+46,p+46+nl)),ds=lo+30+d.getUint16(lo+26,true)+d.getUint16(lo+28,true);let data=u.subarray(ds,ds+cs);
+  if(meth==8)data=new Uint8Array(await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+  out[name]=td.decode(data);p+=46+nl+el+cl}
+ return out}
+function readSheets(z){const P=s=>new DOMParser().parseFromString(s,'application/xml'),T=el=>[...el.getElementsByTagName('t')].map(t=>t.textContent).join('');
+ const ss=z['xl/sharedStrings.xml']?[...P(z['xl/sharedStrings.xml']).getElementsByTagName('si')].map(T):[];
+ const rels={};[...P(z['xl/_rels/workbook.xml.rels']).getElementsByTagName('Relationship')].forEach(r=>rels[r.getAttribute('Id')]=r.getAttribute('Target'));
+ const res={};
+ [...P(z['xl/workbook.xml']).getElementsByTagName('sheet')].forEach(s=>{const x=z['xl/'+String(rels[s.getAttribute('r:id')]).replace(/^\/?(xl\/)?/,'')];if(!x)return;const rows=[];
+  [...P(x).getElementsByTagName('row')].forEach(r=>{const a=[];[...r.getElementsByTagName('c')].forEach(c=>{
+   const ci=c.getAttribute('r').replace(/\d/g,'').split('').reduce((n,ch)=>n*26+ch.charCodeAt(0)-64,0)-1,ty=c.getAttribute('t');let v;
+   if(ty=='inlineStr')v=T(c);else{const ve=c.getElementsByTagName('v')[0];v=ve?ve.textContent:'';if(ty=='s')v=ss[+v]||''}a[ci]=v});rows.push(a)});
+  res[s.getAttribute('name')]=rows});return res}
+async function imp(file){if(!file)return;
+ try{const sh=readSheets(await unzip(await file.arrayBuffer())),rows=sh.Stock||Object.values(sh)[0];if(!rows||rows.length<2)throw 0;
+  const H=(rows[0]||[]).map(h=>String(h||'').toLowerCase()),ix=re=>H.findIndex(h=>re.test(h)),
+  cb=ix(/barcode|code|sku/),cn=ix(/name|item|product|desc/),cp=ix(/price/),cq=ix(/qty|quant|stock level|on hand/),cl=ix(/low|reorder|min/);
+  if(cn<0)throw 0;let add=0,upd=0;
+  rows.slice(1).forEach(r=>{const n=String(r[cn]||'').trim();if(!n)return;const b=cb>=0?String(r[cb]||'').trim():'';
+   const o={b,n,p:cp>=0?+r[cp]||0:0,q:cq>=0?+r[cq]||0:0,l:cl>=0?+r[cl]||0:5};
+   const ex=db.items.find(i=>b?i.b==b:i.n.toLowerCase()==n.toLowerCase());
+   if(ex){Object.assign(ex,o);upd++}else{o.id=uid();db.items.push(o);add++}});
+  db.items.sort((a,b)=>a.n.localeCompare(b.n));save();toast(`Imported: ${add} new, ${upd} updated`)}
+ catch(e){toast('Could not read that file. Use an .xlsx with a Stock sheet.')}
+ $('#imp').value=''}
+
+render();
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist()}catch(e){}
+</script>
+</body>
+</html>
